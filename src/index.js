@@ -7,8 +7,10 @@ import ora from "ora";
 import boxen from "boxen";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { ConfigManager } from "./config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const configManager = new ConfigManager();
 
 program
   .name("container-secrets")
@@ -17,13 +19,15 @@ program
   .option("-f, --file <path>", "Path to .env file")
   .option("-n, --name <name>", "Container App name")
   .option("-g, --resource-group <group>", "Resource group name")
-  .option("-y, --yes", "Skip confirmation prompts");
+  .option("-y, --yes", "Skip confirmation prompts")
+  .option("--new", "Ignore saved values and prompt for new ones");
 
 program.parse();
 const options = program.opts();
 
 async function promptForMissingOptions(options) {
   const questions = [];
+  const config = configManager.loadConfig();
 
   if (!options.file) {
     questions.push({
@@ -35,56 +39,134 @@ async function promptForMissingOptions(options) {
   }
 
   if (!options.name) {
-    questions.push({
-      type: "input",
+    const appQuestion = {
+      type: config.lastUsedApp.length && !options.new ? "list" : "input",
       name: "name",
       message: "🔷 Container App name:",
       validate: (input) => input.length > 0 || "Container App name is required",
-    });
+    };
+
+    if (config.lastUsedApp.length && !options.new) {
+      appQuestion.choices = [
+        ...config.lastUsedApp.map((app) => ({
+          name: `${app} ${chalk.grey("(previously used)")}`,
+          value: app,
+        })),
+        new inquirer.Separator(),
+        { name: "Enter a new app name", value: "_new_" },
+      ];
+    }
+
+    questions.push(appQuestion);
+
+    // If user chooses to enter new app name
+    if (config.lastUsedApp.length && !options.new) {
+      questions.push({
+        type: "input",
+        name: "newName",
+        message: "🔷 Enter new Container App name:",
+        validate: (input) =>
+          input.length > 0 || "Container App name is required",
+        when: (answers) => answers.name === "_new_",
+      });
+    }
   }
 
   if (!options.resourceGroup) {
-    questions.push({
-      type: "input",
+    const rgQuestion = {
+      type:
+        config.lastUsedResourceGroup.length && !options.new ? "list" : "input",
       name: "resourceGroup",
       message: "📦 Resource group name:",
       validate: (input) => input.length > 0 || "Resource group is required",
-    });
+    };
+
+    if (config.lastUsedResourceGroup.length && !options.new) {
+      rgQuestion.choices = [
+        ...config.lastUsedResourceGroup.map((rg) => ({
+          name: `${rg} ${chalk.grey("(previously used)")}`,
+          value: rg,
+        })),
+        new inquirer.Separator(),
+        { name: "Enter a new resource group", value: "_new_" },
+      ];
+    }
+
+    questions.push(rgQuestion);
+
+    // If user chooses to enter new resource group
+    if (config.lastUsedResourceGroup.length && !options.new) {
+      questions.push({
+        type: "input",
+        name: "newResourceGroup",
+        message: "📦 Enter new resource group name:",
+        validate: (input) => input.length > 0 || "Resource group is required",
+        when: (answers) => answers.resourceGroup === "_new_",
+      });
+    }
   }
 
   const answers = await inquirer.prompt(questions);
-  return { ...options, ...answers };
+
+  // Handle new entries
+  if (answers.name === "_new_") {
+    answers.name = answers.newName;
+  }
+  if (answers.resourceGroup === "_new_") {
+    answers.resourceGroup = answers.newResourceGroup;
+  }
+
+  return {
+    ...options,
+    ...answers,
+    name: answers.name || options.name,
+    resourceGroup: answers.resourceGroup || options.resourceGroup,
+    file: answers.file || options.file,
+  };
 }
 
 async function processEnvFile(filePath, appName, resourceGroup) {
   const spinner = ora("Processing environment file").start();
 
   try {
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      spinner.fail(chalk.red(`File not found: ${filePath}`));
+      process.exit(1);
+    }
+
     const fileContent = fs.readFileSync(filePath, "utf8");
+    spinner.text = "Processing variables...";
 
-    const secrets = fileContent
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith("#"))
-      .reduce((acc, line) => {
-        const firstEqualIndex = line.indexOf("=");
-        if (firstEqualIndex === -1) return acc;
+    // Process the variables
+    const secrets = {};
+    const skippedKeys = [];
 
-        const key = line
-          .slice(0, firstEqualIndex)
-          .trim()
-          .toLowerCase()
-          .replace(/_/g, "-");
+    fileContent.split("\n").forEach((line) => {
+      line = line.trim();
+      if (!line || line.startsWith("#")) return;
 
-        const value = line.slice(firstEqualIndex + 1).trim();
-        const cleanValue = value.replace(/^["'](.*)["']$/, "$1");
+      const firstEqualIndex = line.indexOf("=");
+      if (firstEqualIndex === -1) {
+        skippedKeys.push(line);
+        return;
+      }
 
-        if (cleanValue.length > 0) {
-          acc[key] = cleanValue;
-        }
+      const key = line
+        .slice(0, firstEqualIndex)
+        .trim()
+        .toLowerCase()
+        .replace(/_/g, "-");
 
-        return acc;
-      }, {});
+      const value = line.slice(firstEqualIndex + 1).trim();
+      const cleanValue = value.replace(/^["'](.*)["']$/, "$1");
+
+      if (cleanValue.length > 0) {
+        secrets[key] = cleanValue;
+      } else {
+        skippedKeys.push(key);
+      }
+    });
 
     spinner.succeed("Environment file processed");
 
@@ -102,6 +184,9 @@ ${Object.entries(secrets)
     fs.writeFileSync("secrets-command.sh", secretsCommand);
     fs.writeFileSync("secrets.json", JSON.stringify(secrets, null, 2));
 
+    // Save the used values
+    configManager.updateLastUsed(appName, resourceGroup);
+
     console.log(
       "\n" +
         boxen(chalk.green("✨ Files generated successfully"), {
@@ -118,6 +203,13 @@ ${Object.entries(secrets)
       console.log(chalk.grey("•"), chalk.yellow(key));
     });
 
+    if (skippedKeys.length > 0) {
+      console.log(chalk.yellow("\n⚠️  Skipped keys (empty or invalid):"));
+      skippedKeys.forEach((key) => {
+        console.log(chalk.grey("•"), chalk.yellow(key));
+      });
+    }
+
     console.log(chalk.cyan("\n📂 Generated files:"));
     console.log(
       chalk.grey("•"),
@@ -131,7 +223,8 @@ ${Object.entries(secrets)
     console.log(chalk.grey("2."), "Make sure you are logged into Azure CLI");
     console.log(
       chalk.grey("3."),
-      "Run the generated command in secrets-command.sh"
+      "Run:",
+      chalk.green("chmod +x secrets-command.sh && ./secrets-command.sh")
     );
   } catch (error) {
     spinner.fail(chalk.red("Error processing file"));
