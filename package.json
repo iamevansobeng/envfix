@@ -1,0 +1,23 @@
+{
+  "name": "azure-container-secrets",
+  "version": "1.0.0",
+  "description": "CLI tool to process environment variables for Azure Container Apps secrets",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "container-secrets": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": ["azure", "container-apps", "secrets", "cli"],
+  "author": "Evans Obeng",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "inquirer": "^9.2.12",
+    "commander": "^11.1.0",
+    "ora": "^7.0.1",
+    "boxen": "^7.1.1"
+  }
+}
