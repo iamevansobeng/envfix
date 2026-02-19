@@ -5,8 +5,11 @@ node_modules/
 .env
 
 # Generated files
+dist/
 secrets.json
 secrets-command.sh
+envvars.json
+envvars-command.sh
 
 # Logs
 *.log
